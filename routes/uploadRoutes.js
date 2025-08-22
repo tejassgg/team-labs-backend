@@ -6,7 +6,7 @@ const router = express.Router();
 const { emitToTask, emitToProject } = require('../socket');
 
 // Ensure uploads directory exists
-const uploadsDir = path.join(__dirname, '../../client/public/uploads');
+const uploadsDir = path.join(__dirname, '../public/uploads');
 if (!fs.existsSync(uploadsDir)) {
   fs.mkdirSync(uploadsDir, { recursive: true });
 }
