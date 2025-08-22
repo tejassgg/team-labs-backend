@@ -6,6 +6,7 @@ const TeamDetails = require('../models/TeamDetails');
 const TeamJoinRequest = require('../models/TeamJoinRequest');
 const { logActivity } = require('../services/activityService');
 const { checkTeamLimit } = require('../middleware/premiumLimits');
+const { emitToOrg } = require('../socket');
 
 // GET /api/teams/organization/:organizationId - fetch teams by organization
 router.get('/organization/:organizationId', async (req, res) => {
@@ -107,6 +108,23 @@ router.post('/', checkTeamLimit, async (req, res) => {
         team: newTeam,
         message: 'Team created successfully with owner as member'
       });
+
+      // Emit real-time team creation event
+      try {
+        emitToOrg(user.organizationID, 'team.created', {
+          event: 'team.created',
+          version: 1,
+          data: { 
+            organizationId: String(user.organizationID), 
+            team: newTeam 
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+
+        // Emit dashboard metrics update
+        const { emitDashboardMetrics } = require('../services/dashboardMetricsService');
+        emitDashboardMetrics(user.organizationID);
+      } catch (e) { /* ignore */ }
     } catch (error) {
       // If an error occurs, abort the transaction
       await session.abortTransaction();
@@ -165,6 +183,21 @@ router.post('/:teamId/join-request', async (req, res) => {
       }
     );
     res.status(201).json(request);
+
+    // Emit real-time join request event
+    try {
+      emitToOrg(team?.organizationID, 'team.join_request.created', {
+        event: 'team.join_request.created',
+        version: 1,
+        data: { 
+          organizationId: String(team?.organizationID), 
+          teamId: teamId,
+          request: request,
+          user: await User.findById(userId).select('-password')
+        },
+        meta: { emittedAt: new Date().toISOString() }
+      });
+    } catch (e) { /* ignore */ }
   } catch (err) {
     console.log(err);
     res.status(500).json({ error: 'Failed to create join request' });
@@ -197,6 +230,26 @@ router.post('/:teamId/join-requests/:requestId/accept', async (req, res) => {
     const TeamDetails = require('../models/TeamDetails');
     await TeamDetails.create({ TeamID_FK: teamId, MemberID: request.userId, IsMemberActive: true, CreatedDate: new Date(), ModifiedBy: adminId });
     res.json({ message: 'Request accepted', request });
+
+          // Emit real-time join request accepted event
+      try {
+        const team = await Team.findOne({ TeamID: teamId });
+        emitToOrg(team?.organizationID, 'team.join_request.accepted', {
+          event: 'team.join_request.accepted',
+          version: 1,
+          data: { 
+            organizationId: String(team?.organizationID), 
+            teamId: teamId,
+            request: request,
+            team: team
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+
+        // Emit dashboard metrics update
+        const { emitDashboardMetrics } = require('../services/dashboardMetricsService');
+        emitDashboardMetrics(team?.organizationID);
+      } catch (e) { /* ignore */ }
   } catch (err) {
     res.status(500).json({ error: 'Failed to accept join request' });
   }
@@ -214,6 +267,22 @@ router.post('/:teamId/join-requests/:requestId/reject', async (req, res) => {
     request.respondedBy = adminId;
     await request.save();
     res.json({ message: 'Request rejected', request });
+
+    // Emit real-time join request rejected event
+    try {
+      const team = await Team.findOne({ TeamID: teamId });
+      emitToOrg(team?.organizationID, 'team.join_request.rejected', {
+        event: 'team.join_request.rejected',
+        version: 1,
+        data: { 
+          organizationId: String(team?.organizationID), 
+          teamId: teamId,
+          request: request,
+          team: team
+        },
+        meta: { emittedAt: new Date().toISOString() }
+      });
+    } catch (e) { /* ignore */ }
   } catch (err) {
     res.status(500).json({ error: 'Failed to reject join request' });
   }

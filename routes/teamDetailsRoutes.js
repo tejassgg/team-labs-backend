@@ -9,6 +9,7 @@ const ProjectDetails = require('../models/ProjectDetails');
 const Project = require('../models/Project');
 const UserActivity = require('../models/UserActivity');
 const { logActivity } = require('../services/activityService');
+const { emitToOrg } = require('../socket');
 
 // Middleware to check if requester is the team owner
 async function checkOwner(req, res, next) {
@@ -161,6 +162,28 @@ router.post('/:teamId/add-member', checkOwner, async (req, res) => {
     });
     await newMember.save();
     res.status(201).json(newMember);
+
+          // Emit real-time member added event
+      try {
+        const team = await Team.findOne({ TeamID: req.params.teamId });
+        const user = await User.findById(UserID).select('-password');
+        emitToOrg(team?.organizationID, 'team.member.added', {
+          event: 'team.member.added',
+          version: 1,
+          data: { 
+            organizationId: String(team?.organizationID), 
+            teamId: req.params.teamId,
+            member: newMember,
+            user: user,
+            team: team
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+
+        // Emit dashboard metrics update
+        const { emitDashboardMetrics } = require('../services/dashboardMetricsService');
+        emitDashboardMetrics(team?.organizationID);
+      } catch (e) { /* ignore */ }
   } catch (err) {
     res.status(500).json({ error: 'Failed to add member' });
   }
@@ -176,6 +199,24 @@ router.patch('/:teamId/member/:memberId/toggle', checkOwner, async (req, res) =>
     member.ModifiedBy = req.body.OwnerID;
     await member.save();
     res.json(member);
+
+    // Emit real-time member status updated event
+    try {
+      const team = await Team.findOne({ TeamID: req.params.teamId });
+      const user = await User.findById(req.params.memberId).select('-password');
+      emitToOrg(team?.organizationID, 'team.member.status.updated', {
+        event: 'team.member.status.updated',
+        version: 1,
+        data: { 
+          organizationId: String(team?.organizationID), 
+          teamId: req.params.teamId,
+          member: member,
+          user: user,
+          team: team
+        },
+        meta: { emittedAt: new Date().toISOString() }
+      });
+    } catch (e) { /* ignore */ }
   } catch (err) {
     res.status(500).json({ error: 'Failed to update member status' });
   }
@@ -205,6 +246,24 @@ router.patch('/:teamId', checkOwner, async (req, res) => {
     await team.save();
 
     res.json(team);
+
+          // Emit real-time team updated event
+      try {
+        emitToOrg(team.organizationID, 'team.updated', {
+          event: 'team.updated',
+          version: 1,
+          data: { 
+            organizationId: String(team.organizationID), 
+            teamId: req.params.teamId,
+            team: team
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+
+        // Emit dashboard metrics update
+        const { emitDashboardMetrics } = require('../services/dashboardMetricsService');
+        emitDashboardMetrics(team.organizationID);
+      } catch (e) { /* ignore */ }
   } catch (err) {
     console.error('Error updating team details:', err);
     res.status(500).json({ error: 'Failed to update team details' });
@@ -222,6 +281,26 @@ router.patch('/:teamId/toggle-status', checkOwner, async (req, res) => {
     team.ModifiedDate = new Date();
     team.ModifiedBy = req.body.OwnerID;
     await team.save();
+
+          // Emit real-time team status updated event
+      try {
+        emitToOrg(team.organizationID, 'team.status.updated', {
+          event: 'team.status.updated',
+          version: 1,
+          data: { 
+            organizationId: String(team.organizationID), 
+            teamId: req.params.teamId,
+            team: team,
+            oldStatus: oldStatus,
+            newStatus: team.IsActive
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+
+        // Emit dashboard metrics update
+        const { emitDashboardMetrics } = require('../services/dashboardMetricsService');
+        emitDashboardMetrics(team.organizationID);
+      } catch (e) { /* ignore */ }
 
     // Log the activity
     await logActivity(
@@ -281,6 +360,28 @@ router.delete('/:teamId/member/:memberId', checkOwner, async (req, res) => {
 
     await member.deleteOne();
     res.json({ message: 'Member removed successfully' });
+
+          // Emit real-time member removed event
+      try {
+        const team = await Team.findOne({ TeamID: req.params.teamId });
+        const user = await User.findById(req.params.memberId).select('-password');
+        emitToOrg(team?.organizationID, 'team.member.removed', {
+          event: 'team.member.removed',
+          version: 1,
+          data: { 
+            organizationId: String(team?.organizationID), 
+            teamId: req.params.teamId,
+            memberId: req.params.memberId,
+            user: user,
+            team: team
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+
+        // Emit dashboard metrics update
+        const { emitDashboardMetrics } = require('../services/dashboardMetricsService');
+        emitDashboardMetrics(team?.organizationID);
+      } catch (e) { /* ignore */ }
   } catch (err) {
     console.error('Error removing member:', err);
     res.status(500).json({ error: 'Failed to remove member' });
@@ -357,6 +458,24 @@ router.delete('/:teamId', checkOwner, async (req, res) => {
       session.endSession();
 
       res.json({ message: 'Team deleted successfully' });
+
+      // Emit real-time team deleted event
+      try {
+        emitToOrg(team.organizationID, 'team.deleted', {
+          event: 'team.deleted',
+          version: 1,
+          data: { 
+            organizationId: String(user.organizationID), 
+            teamId: req.params.teamId,
+            team: team
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+
+        // Emit dashboard metrics update
+        const { emitDashboardMetrics } = require('../services/dashboardMetricsService');
+        emitDashboardMetrics(team.organizationID);
+      } catch (e) { /* ignore */ }
     } catch (error) {
       // If an error occurs, abort the transaction
       await session.abortTransaction();
@@ -427,6 +546,26 @@ router.delete('/:teamId/members/remove-members', checkOwner, async (req, res) =>
       message: `Successfully removed ${result.deletedCount} members`,
       removedCount: result.deletedCount
     });
+
+          // Emit real-time bulk members removed event
+      try {
+        emitToOrg(team.organizationID, 'team.members.bulk_removed', {
+          event: 'team.members.bulk_removed',
+          version: 1,
+          data: { 
+            organizationId: String(team.organizationID), 
+            teamId: req.params.teamId,
+            team: team,
+            removedCount: result.deletedCount,
+            removedMemberIds: memberIds
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+
+        // Emit dashboard metrics update
+        const { emitDashboardMetrics } = require('../services/dashboardMetricsService');
+        emitDashboardMetrics(team.organizationID);
+      } catch (e) { /* ignore */ }
   } catch (err) {
     console.error('Error removing members:', err);
     // Log the error activity
@@ -526,6 +665,27 @@ router.delete('/:teamId/projects/remove-projects', checkOwner, async (req, res) 
         removedCount: result.deletedCount,
         updatedToUnassigned: projectsToUpdate.length
       });
+
+      // Emit real-time bulk projects removed event
+      try {
+        emitToOrg(team.organizationID, 'team.projects.bulk_removed', {
+          event: 'team.projects.bulk_removed',
+          version: 1,
+          data: { 
+            organizationId: String(team.organizationID), 
+            teamId: req.params.teamId,
+            team: team,
+            removedCount: result.deletedCount,
+            removedProjectIds: projectIds,
+            updatedToUnassigned: projectsToUpdate.length
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+
+        // Emit dashboard metrics update
+        const { emitDashboardMetrics } = require('../services/dashboardMetricsService');
+        emitDashboardMetrics(team.organizationID);
+      } catch (e) { /* ignore */ }
     } catch (error) {
       // If an error occurs, abort the transaction
       await session.abortTransaction();
