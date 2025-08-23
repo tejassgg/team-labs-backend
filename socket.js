@@ -176,6 +176,193 @@ function initSocket(server) {
         });
       } catch (_) {}
     });
+
+    // Call-related events
+    socket.on('call.initiate', async (payload) => {
+      try {
+        const { recipientId, callerId, conversationId, type, callerName, offer } = payload || {};
+        if (!recipientId || !callerId || !conversationId || !type) return;
+        
+        // Verify the caller is the authenticated user
+        if (String(callerId) !== String(socket.data.user.id)) return;
+        
+        // Verify the conversation exists and caller is a participant
+        const convo = await Conversation.findById(conversationId).select('participants');
+        if (!convo) return;
+        const isParticipant = convo.participants.map(String).includes(String(callerId));
+        if (!isParticipant) return;
+        
+        // Send incoming call notification to recipient with offer
+        emitToUser(recipientId, 'call.incoming', {
+          event: 'call.incoming',
+          version: 1,
+          data: {
+            callerId,
+            callerName,
+            type,
+            conversationId,
+            offer,
+            timestamp: new Date().toISOString()
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+        
+        // Also emit to conversation room for real-time updates
+        emitToConversation(conversationId, 'call.initiated', {
+          event: 'call.initiated',
+          version: 1,
+          data: {
+            callerId,
+            callerName,
+            type,
+            conversationId,
+            timestamp: new Date().toISOString()
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+      } catch (error) {
+        console.error('Call initiation error:', error);
+      }
+    });
+
+    socket.on('call.answer', async (payload) => {
+      try {
+        const { callerId, conversationId, answer } = payload || {};
+        if (!callerId || !conversationId) return;
+        
+        // Verify the user is a participant in the conversation
+        const convo = await Conversation.findById(conversationId).select('participants');
+        if (!convo) return;
+        const isParticipant = convo.participants.map(String).includes(String(socket.data.user.id));
+        if (!isParticipant) return;
+        
+        emitToUser(callerId, 'call.answered', {
+          event: 'call.answered',
+          version: 1,
+          data: {
+            conversationId,
+            answererId: socket.data.user.id,
+            answererName: `${socket.data.user.firstName || ''} ${socket.data.user.lastName || ''}`.trim(),
+            answer,
+            timestamp: new Date().toISOString()
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+        
+        // Notify conversation room
+        emitToConversation(conversationId, 'call.answered', {
+          event: 'call.answered',
+          version: 1,
+          data: {
+            conversationId,
+            answererId: socket.data.user.id,
+            answererName: `${socket.data.user.firstName || ''} ${socket.data.user.lastName || ''}`.trim(),
+            answer,
+            timestamp: new Date().toISOString()
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+      } catch (error) {
+        console.error('Call answer error:', error);
+      }
+    });
+
+    socket.on('call.decline', async (payload) => {
+      try {
+        const { callerId, conversationId } = payload || {};
+        if (!callerId || !conversationId) return;
+        
+        // Verify the user is a participant in the conversation
+        const convo = await Conversation.findById(conversationId).select('participants');
+        if (!convo) return;
+        const isParticipant = convo.participants.map(String).includes(String(socket.data.user.id));
+        if (!isParticipant) return;
+        
+        // Notify caller that call was declined
+        emitToUser(callerId, 'call.declined', {
+          event: 'call.declined',
+          version: 1,
+          data: {
+            conversationId,
+            declinerId: socket.data.user.id,
+            declinerName: `${socket.data.user.firstName || ''} ${socket.data.user.lastName || ''}`.trim(),
+            timestamp: new Date().toISOString()
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+        
+        // Notify conversation room
+        emitToConversation(conversationId, 'call.declined', {
+          event: 'call.declined',
+          version: 1,
+          data: {
+            conversationId,
+            declinerId: socket.data.user.id,
+            declinerName: `${socket.data.user.firstName || ''} ${socket.data.user.lastName || ''}`.trim(),
+            timestamp: new Date().toISOString()
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+      } catch (error) {
+        console.error('Call decline error:', error);
+      }
+    });
+
+    socket.on('call.end', async (payload) => {
+      try {
+        const { conversationId } = payload || {};
+        if (!conversationId) return;
+        
+        // Verify the user is a participant in the conversation
+        const convo = await Conversation.findById(conversationId).select('participants');
+        if (!convo) return;
+        const isParticipant = convo.participants.map(String).includes(String(socket.data.user.id));
+        if (!isParticipant) return;
+        
+        // Notify all participants that call ended
+        emitToConversation(conversationId, 'call.ended', {
+          event: 'call.ended',
+          version: 1,
+          data: {
+            conversationId,
+            endedBy: socket.data.user.id,
+            endedByName: `${socket.data.user.firstName || ''} ${socket.data.user.lastName || ''}`.trim(),
+            timestamp: new Date().toISOString()
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+      } catch (error) {
+        console.error('Call end error:', error);
+      }
+    });
+
+    // Handle ICE candidates for WebRTC
+    socket.on('call.ice-candidate', async (payload) => {
+      try {
+        const { candidate, to, conversationId } = payload || {};
+        if (!candidate || !to || !conversationId) return;
+        
+        // Verify the user is a participant in the conversation
+        const convo = await Conversation.findById(conversationId).select('participants');
+        if (!convo) return;
+        const isParticipant = convo.participants.map(String).includes(String(socket.data.user.id));
+        if (!isParticipant) return;
+        
+        // Forward ICE candidate to the target user
+        emitToUser(to, 'call.ice-candidate', {
+          event: 'call.ice-candidate',
+          version: 1,
+          data: {
+            candidate,
+            from: socket.data.user.id,
+            conversationId
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+      } catch (error) {
+        console.error('ICE candidate error:', error);
+      }
+    });
   });
 
   ioInstance = io;

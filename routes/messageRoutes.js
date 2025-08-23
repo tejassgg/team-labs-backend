@@ -720,6 +720,15 @@ router.post('/messages/:messageId/reactions', protect, async (req, res) => {
     }
     await message.save();
     const populated = await Message.findById(message._id).populate('sender', 'firstName lastName email profileImage');
+    // Emit real-time update to conversation so other participants see reaction changes immediately
+    try {
+      emitToConversation(String(populated.conversation), 'chat.message.updated', {
+        event: 'chat.message.updated',
+        version: 1,
+        data: { conversationId: String(populated.conversation), message: populated },
+        meta: { emittedAt: new Date().toISOString() }
+      });
+    } catch (_) {}
     res.json(populated);
   } catch (err) {
     res.status(500).json({ message: 'Failed to update reaction' });
