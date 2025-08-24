@@ -4,6 +4,7 @@ const User = require('./models/User');
 const Project = require('./models/Project');
 const TaskDetails = require('./models/TaskDetails');
 const Conversation = require('./models/Conversation');
+const { formatTime12Hour } = require('./services/dateUtils');
 
 let ioInstance = null;
 
@@ -283,23 +284,13 @@ function initSocket(server) {
         const caller = await User.findById(callerId).select('firstName lastName');
         const callerName = caller ? `${caller.firstName || ''} ${caller.lastName || ''}`.trim() : 'Unknown User';
         
-        // Format date and time for better readability
-        const now = new Date();
-        const options = { 
-          weekday: 'long', 
-          year: 'numeric', 
-          month: 'long', 
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit'
-        };
-        const formattedDateTime = now.toLocaleDateString('en-US', options);
+        // Format time only for missed call message
+        const formattedTime = formatTime12Hour();
         
         const systemMessage = await Message.create({
           conversation: conversationId,
           type: 'system',
-          text: `Missed call on ${formattedDateTime}`
+          text: `Missed call at ${formattedTime}`
         });
         
         // Update conversation with last message info
@@ -468,23 +459,13 @@ function initSocket(server) {
         const caller = await User.findById(callerId).select('firstName lastName');
         const callerName = caller ? `${caller.firstName || ''} ${caller.lastName || ''}`.trim() : 'Unknown User';
         
-        // Format date and time for better readability
-        const now = new Date();
-        const options = { 
-          weekday: 'long', 
-          year: 'numeric', 
-          month: 'long', 
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit'
-        };
-        const formattedDateTime = now.toLocaleDateString('en-US', options);
+        // Format time only for missed call message
+        const formattedTime = formatTime12Hour();
         
         const systemMessage = await Message.create({
           conversation: conversationId,
           type: 'system',
-          text: `Missed call on ${formattedDateTime}`
+          text: `Missed call at ${formattedTime}`
         });
         
         // Update conversation with last message info

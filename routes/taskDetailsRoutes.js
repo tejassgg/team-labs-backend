@@ -11,7 +11,6 @@ const CommonType = require('../models/CommonType');
 const { logActivity } = require('../services/activityService');
 const { sendTaskAssignmentEmail } = require('../services/emailService');
 const { emitToProject, emitToTask } = require('../socket');
-const Subtask = require('../models/Subtask');
 const Attachment = require('../models/Attachment');
 const Comment = require('../models/Comment');
 const UserActivity = require('../models/UserActivity');

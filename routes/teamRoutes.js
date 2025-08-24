@@ -158,12 +158,13 @@ router.post('/:teamId/join-request', async (req, res) => {
   try {
     const { teamId } = req.params;
     const { userId } = req.body;
+
     if (!userId) return res.status(400).json({ error: 'userId is required' });
     
     // Prevent duplicate requests
     const existing = await TeamJoinRequest.findOne({ userId, teamId, status: 'pending' });
     if (existing) {
-      return res.status(400).json({ error: 'Request already pending' });
+      return res.status(200).json({ message: 'Request already pending' });
     }
 
     const request = new TeamJoinRequest({ userId, teamId, status: 'pending' });
@@ -183,7 +184,7 @@ router.post('/:teamId/join-request', async (req, res) => {
       }
     );
     res.status(201).json(request);
-
+  
     // Emit real-time join request event
     try {
       emitToOrg(team?.organizationID, 'team.join_request.created', {
@@ -197,10 +198,12 @@ router.post('/:teamId/join-request', async (req, res) => {
         },
         meta: { emittedAt: new Date().toISOString() }
       });
-    } catch (e) { /* ignore */ }
+    } catch (e) { 
+      console.log(e);
+     }
   } catch (err) {
     console.log(err);
-    res.status(500).json({ error: 'Failed to create join request' });
+    res.status(500).json({ message: 'Failed to create join request' });
   }
 });
 
@@ -211,7 +214,7 @@ router.get('/:teamId/join-requests', async (req, res) => {
     const requests = await TeamJoinRequest.find({ teamId, status: 'pending' }).populate('userId', 'name email');
     res.json(requests);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch join requests' });
+    res.status(500).json({ message: 'Failed to fetch join requests' });
   }
 });
 
@@ -221,7 +224,7 @@ router.post('/:teamId/join-requests/:requestId/accept', async (req, res) => {
     const { teamId, requestId } = req.params;
     const { adminId } = req.body;
     const request = await TeamJoinRequest.findById(requestId);
-    if (!request || request.teamId.toString() !== teamId) return res.status(404).json({ error: 'Request not found' });
+    if (!request || request.teamId.toString() !== teamId) return res.status(404).json({ message: 'Request not found' });
     request.status = 'accepted';
     request.respondedAt = new Date();
     request.respondedBy = adminId;
@@ -251,7 +254,7 @@ router.post('/:teamId/join-requests/:requestId/accept', async (req, res) => {
         emitDashboardMetrics(team?.organizationID);
       } catch (e) { /* ignore */ }
   } catch (err) {
-    res.status(500).json({ error: 'Failed to accept join request' });
+    res.status(500).json({ message: 'Failed to accept join request' });
   }
 });
 
@@ -261,7 +264,7 @@ router.post('/:teamId/join-requests/:requestId/reject', async (req, res) => {
     const { teamId, requestId } = req.params;
     const { adminId } = req.body;
     const request = await TeamJoinRequest.findById(requestId);
-    if (!request || request.teamId.toString() !== teamId) return res.status(404).json({ error: 'Request not found' });
+    if (!request || request.teamId.toString() !== teamId) return res.status(404).json({ message: 'Request not found' });
     request.status = 'rejected';
     request.respondedAt = new Date();
     request.respondedBy = adminId;
@@ -284,7 +287,43 @@ router.post('/:teamId/join-requests/:requestId/reject', async (req, res) => {
       });
     } catch (e) { /* ignore */ }
   } catch (err) {
-    res.status(500).json({ error: 'Failed to reject join request' });
+    res.status(500).json({ message: 'Failed to reject join request' });
+  }
+});
+
+// GET /api/teams/user/:userId/pending-requests - get user's pending join requests
+router.get('/user/:userId/pending-requests', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const pendingRequests = await TeamJoinRequest.find({ userId, status: 'pending' });
+    
+    // Extract team IDs from the pending requests
+    const teamIds = pendingRequests.map(request => request.teamId);
+    
+    // Fetch team details for the pending requests
+    const teams = await Team.find({ TeamID: { $in: teamIds } });
+    
+    // Combine request data with team details
+    const requestsWithTeamDetails = pendingRequests.map(request => {
+      const team = teams.find(t => t.TeamID === request.teamId);
+      return {
+        ...request.toObject(),
+        teamDetails: team ? {
+          TeamID: team.TeamID,
+          TeamName: team.TeamName,
+          TeamDescription: team.TeamDescription,
+          organizationID: team.organizationID
+        } : null
+      };
+    });
+    
+    res.json({ 
+      pendingRequests: requestsWithTeamDetails, 
+      teamIds 
+    });
+  } catch (error) {
+    console.error('Error fetching user pending requests:', error);
+    res.status(500).json({ message: 'Failed to fetch pending requests' });
   }
 });
 
