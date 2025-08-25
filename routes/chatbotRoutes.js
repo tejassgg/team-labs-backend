@@ -18,7 +18,7 @@ const responses = {
         },
         login: {
             text: "To log in, click the 'Login' button and enter your email/username and password. You can also use Google Sign-In if you prefer.",
-            links: [{ text: "Login Now", url: "/login", type: "action" }]
+            links: [{ text: "Login Now", url: "/", type: "action" }]
         },
         teams: {
             text: "Teams are groups of users working together on projects. You can create a team, join existing teams, or manage team members through the Teams section.",
@@ -82,7 +82,7 @@ const processMessage = (message) => {
         return {
             text: getRandomResponse(responses.greetings),
             links: [
-                { text: "Login", url: "/login", type: "action" },
+                { text: "Login", url: "/", type: "action" },
                 { text: "Register", url: "/register", type: "action" },
                 { text: "Learn More", url: "/", type: "action" }
             ]

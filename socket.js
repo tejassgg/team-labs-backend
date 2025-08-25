@@ -143,6 +143,29 @@ function initSocket(server) {
       } catch (_) {}
     });
 
+    // Handle subtask events
+    socket.on('subtask.join', async (data) => {
+      try {
+        const { taskId } = data || {};
+        if (taskId) {
+          socket.join(`task:${taskId}`);
+        }
+      } catch (error) {
+        console.error('Subtask join error:', error);
+      }
+    });
+
+    socket.on('subtask.leave', async (data) => {
+      try {
+        const { taskId } = data || {};
+        if (taskId) {
+          socket.leave(`task:${taskId}`);
+        }
+      } catch (error) {
+        console.error('Subtask leave error:', error);
+      }
+    });
+
     // Join/leave conversation rooms (must be a participant)
     socket.on('conversation.join', async (payload) => {
       try {

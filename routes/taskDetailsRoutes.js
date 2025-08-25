@@ -16,6 +16,7 @@ const Comment = require('../models/Comment');
 const UserActivity = require('../models/UserActivity');
 const { checkUserStoryLimit, checkTaskLimit, incrementUsage } = require('../middleware/premiumLimits');
 const { emitDashboardMetrics } = require('../services/dashboardMetricsService');
+const Subtask = require('../models/Subtask');
 
 // Middleware to check limits based on task type
 const checkTaskTypeLimit = async (req, res, next) => {
@@ -299,6 +300,7 @@ router.get('/all', async (req, res) => {
 // GET /api/task-details/:taskId - Get a single task by ID
 router.get('/:taskId', async (req, res) => {
     try {
+        console.log(req.params);
         const taskId = req.params.taskId;
         const task = await TaskDetails.findOne({ TaskID: taskId, IsActive: true });
 
@@ -414,6 +416,41 @@ router.get('/project/:projectId', async (req, res) => {
             newTask.attachmentsCount = attachmentsCount;
             newTask.commentsCount = commentsCount;
 
+            // Fetch active subtasks for this task (sorted by CreatedDate)
+            try {
+                const Subtask = require('../models/Subtask');
+                const rawSubtasks = await Subtask.find({ TaskID_FK: task.TaskID, IsActive: true })
+                    .sort({ IsCompleted: -1, CreatedDate: 1 })
+                    .lean();
+
+                // Optionally enrich with minimal creator/completer display data
+                const populatedSubtasks = await Promise.all(rawSubtasks.map(async (s) => {
+                    const subtask = { ...s };
+                    if (s.CreatedBy) {
+                        const u = await User.findById(s.CreatedBy).select('firstName lastName');
+                        if (u) {
+                            subtask.CreatedByDetails = {
+                                _id: u._id,
+                                fullName: `${u.firstName} ${u.lastName}`,
+                            };
+                        }
+                    }
+                    if (s.CompletedBy) {
+                        const u2 = await User.findById(s.CompletedBy).select('firstName lastName');
+                        if (u2) {
+                            subtask.CompletedByDetails = {
+                                _id: u2._id,
+                                fullName: `${u2.firstName} ${u2.lastName}`,
+                            };
+                        }
+                    }
+                    return subtask;
+                }));
+                newTask.subtasks = populatedSubtasks;
+            } catch (e) {
+                newTask.subtasks = [];
+            }
+
             return newTask;
         }));
 
@@ -462,6 +499,77 @@ router.get('/project/:projectId/team-members', async (req, res) => {
     } catch (error) {
         console.log(error);
         res.status(500).json({ error: 'Failed to fetch team members' });
+    }
+});
+
+// GET /api/task-details/project/:projectId/kanban - Minimal tasks + user stories for Kanban
+router.get('/project/:projectId/kanban', async (req, res) => {
+    try {
+        const projectId = req.params.projectId;
+
+        // Fetch non-User Story tasks (active)
+        const tasks = await TaskDetails.find({ ProjectID_FK: projectId, IsActive: true, Type: { $ne: "User Story" } }).sort({ CreatedDate: 1 });
+
+        const shapedTasks = await Promise.all(tasks.map(async (task) => {
+            const shaped = task.toObject();
+
+            // AssignedTo details (minimal)
+            if (shaped.AssignedTo) {
+                const user = await User.findById(task.AssignedTo).select('firstName lastName username email');
+                if (user) {
+                    shaped.AssignedToDetails = {
+                        _id: user._id,
+                        username: user.username,
+                        fullName: `${user.firstName} ${user.lastName}`,
+                        email: user.email
+                    };
+                }
+            }
+
+            // counts
+            const [attachmentsCount, commentsCount] = await Promise.all([
+                Attachment.countDocuments({ TaskID: task.TaskID }),
+                Comment.countDocuments({ TaskID: task.TaskID })
+            ]);
+            shaped.attachmentsCount = attachmentsCount;
+            shaped.commentsCount = commentsCount;
+
+            // include active subtasks (minimal + creator/completer display)
+            try {
+                const Subtask = require('../models/Subtask');
+                const raw = await Subtask.find({ TaskID_FK: task.TaskID, IsActive: true })
+                    .sort({ IsCompleted: -1, CreatedDate: 1 })
+                    .lean();
+                shaped.subtasks = await Promise.all(raw.map(async (s) => {
+                    const sub = { ...s };
+                    if (s.CreatedBy) {
+                        const u = await User.findById(s.CreatedBy).select('firstName lastName');
+                        if (u) sub.CreatedByDetails = { _id: u._id, fullName: `${u.firstName} ${u.lastName}` };
+                    }
+                    if (s.CompletedBy) {
+                        const u2 = await User.findById(s.CompletedBy).select('firstName lastName');
+                        if (u2) sub.CompletedByDetails = { _id: u2._id, fullName: `${u2.firstName} ${u2.lastName}` };
+                    }
+                    return sub;
+                }));
+            } catch (e) {
+                shaped.subtasks = [];
+            }
+
+            // keep only required fields implicitly by returning shaped
+            return shaped;
+        }));
+
+        // Fetch user stories for the project (minimal)
+        const userStoriesDocs = await TaskDetails.find({ ProjectID_FK: projectId, IsActive: true, Type: 'User Story' })
+            .select('TaskID Name Status Priority CreatedDate')
+            .sort({ CreatedDate: 1 })
+            .lean();
+
+        return res.json({ tasks: shapedTasks, userStories: userStoriesDocs });
+    } catch (error) {
+        console.error('Error fetching kanban data:', error);
+        return res.status(500).json({ error: 'Failed to fetch kanban data' });
     }
 });
 
@@ -1202,9 +1310,43 @@ router.get('/:taskId/full', async (req, res) => {
             }
         }
 
-        const subtasks = await Subtask.find({ TaskID: taskId }).sort({ Order: 1, CreatedDate: 1 });
         const attachments = await Attachment.find({ TaskID: taskId }).sort({ UploadedAt: -1 });
         const comments = await Comment.find({ TaskID: taskId }).sort({ CreatedAt: 1 });
+
+        // Fetch subtasks
+        const subtasks = await Subtask.find({ 
+            TaskID_FK: taskId, 
+            IsActive: true 
+        }).sort({ Order: 1, CreatedDate: 1 });
+
+        // Populate user details for subtasks
+        const populatedSubtasks = await Promise.all(
+            subtasks.map(async (subtask) => {
+                const subtaskObj = subtask.toObject();
+                
+                if (subtask.CreatedBy) {
+                    const createdByUser = await User.findById(subtask.CreatedBy).select('firstName lastName');
+                    if (createdByUser) {
+                        subtaskObj.CreatedByDetails = {
+                            _id: createdByUser._id,
+                            fullName: `${createdByUser.firstName} ${createdByUser.lastName}`,
+                        };
+                    }
+                }
+                
+                if (subtask.CompletedBy) {
+                    const completedByUser = await User.findById(subtask.CompletedBy).select('firstName lastName');
+                    if (completedByUser) {
+                        subtaskObj.CompletedByDetails = {
+                            _id: completedByUser._id,
+                            fullName: `${completedByUser.firstName} ${completedByUser.lastName}`,
+                        };
+                    }
+                }
+                
+                return subtaskObj;
+            })
+        );
 
         // Fetch task activity
         const taskActivity = await UserActivity.find({
@@ -1220,7 +1362,7 @@ router.get('/:taskId/full', async (req, res) => {
             task: newTask,
             project,
             projectMembers,
-            subtasks,
+            subtasks: populatedSubtasks,
             attachments,
             comments,
             taskActivity,

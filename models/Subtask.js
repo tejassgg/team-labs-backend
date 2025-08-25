@@ -7,11 +7,12 @@ const SubtaskSchema = new mongoose.Schema({
     default: uuidv4,
     unique: true
   },
-  TaskID: {
+  TaskID_FK: {
     type: String,
-    required: true
+    required: true,
+    ref: 'TaskDetails'
   },
-  Title: {
+  Name: {
     type: String,
     required: true,
     maxlength: 100
@@ -20,14 +21,33 @@ const SubtaskSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  CreatedBy: {
+    type: String,
+    required: true,
+    ref: 'User'
+  },
+  CompletedBy: {
+    type: String,
+    default: null,
+    ref: 'User'
+  },
   CreatedDate: {
     type: Date,
     default: Date.now
   },
-  Order: {
-    type: Number,
-    default: 0
+  CompletedDate: {
+    type: Date,
+    default: null
+  },
+  IsActive: {
+    type: Boolean,
+    default: true
   }
 });
 
-module.exports = mongoose.model('Subtask', SubtaskSchema); 
+// Index for efficient queries
+SubtaskSchema.index({ TaskID_FK: 1, IsActive: 1 });
+SubtaskSchema.index({ CreatedBy: 1 });
+SubtaskSchema.index({ CompletedBy: 1 });
+
+module.exports = mongoose.model('Subtask', SubtaskSchema);
