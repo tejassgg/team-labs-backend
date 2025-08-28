@@ -3,7 +3,7 @@ const router = express.Router();
 const Attachment = require('../models/Attachment');
 const TaskDetails = require('../models/TaskDetails');
 const User = require('../models/User');
-const { emitToTask } = require('../socket');
+const { emitToTask, emitToProject } = require('../socket');
 const fs = require('fs');
 const path = require('path');
 
@@ -58,6 +58,34 @@ router.get('/project/:projectId', async (req, res) => {
   }
 });
 
+// Add project-level attachment by metadata (client saves file locally and passes URL)
+// POST /api/attachments/project/:projectId/attachments
+router.post('/project/:projectId/attachments', async (req, res) => {
+  try {
+    const { projectId } = req.params;
+    const { Filename, FileURL, UploadedBy, FileSize } = req.body;
+    if (!projectId || !Filename || !FileURL || !UploadedBy || !FileSize) {
+      return res.status(400).json({ error: 'Project ID, Filename, FileURL, and UploadedBy are required' });
+    }
+
+    const attachment = new Attachment({
+      ProjectID: projectId,
+      TaskID: null,
+      Filename,
+      FileURL,
+      UploadedBy,
+      FileSize,
+      UploadedAt: new Date()
+    });
+    await attachment.save();
+    try { emitToProject(projectId, 'project.attachment.added', { event: 'project.attachment.added', version: 1, data: { projectId, attachment }, meta: { emittedAt: new Date().toISOString() } }); } catch (e) {}
+    return res.status(201).json(attachment);
+  } catch (err) {
+    console.error('Error adding project attachment:', err);
+    res.status(500).json({ error: 'Failed to add project attachment' });
+  }
+});
+
 // Get all attachments for a task
 // GET /api/attachments/tasks/:taskId/attachments
 router.get('/tasks/:taskId/attachments', async (req, res) => {
@@ -81,9 +109,9 @@ router.get('/tasks/:taskId/attachments', async (req, res) => {
 router.post('/tasks/:taskId/attachments', async (req, res) => {
   try {
     const { taskId } = req.params;
-    const { Filename, FileURL, UploadedBy } = req.body;
+    const { Filename, FileURL, UploadedBy, FileSize } = req.body;
     
-    if (!taskId || !Filename || !FileURL || !UploadedBy) {
+    if (!taskId || !Filename || !FileURL || !UploadedBy || !FileSize) {
       return res.status(400).json({ error: 'Task ID, Filename, FileURL, and UploadedBy are required' });
     }
 
@@ -92,6 +120,7 @@ router.post('/tasks/:taskId/attachments', async (req, res) => {
       Filename, 
       FileURL, 
       UploadedBy,
+      FileSize,
       UploadedAt: new Date()
     });
     
@@ -123,18 +152,24 @@ router.delete('/:attachmentId', async (req, res) => {
       return res.status(404).json({ error: 'Attachment not found' });
     }
 
-    // Delete the physical file if it exists
+    // Ask client Next.js API to remove the physical file (stored under client/public)
     if (attachment.FileURL) {
-      const filePath = path.join(__dirname, '../../client/public', attachment.FileURL);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
+      try {
+        const base = process.env.FRONTEND_URL;
+        fetch(`${base}/api/local-delete?path=${encodeURIComponent(attachment.FileURL)}`, { method: 'DELETE' }).catch(() => {});
+      } catch (_) {}
     }
 
     // Delete from database
     await Attachment.findOneAndDelete({ AttachmentID: attachmentId });
 
-    try { emitToTask(attachment.TaskID, 'task.attachment.removed', { event: 'task.attachment.removed', version: 1, data: { taskId: attachment.TaskID, attachmentId }, meta: { emittedAt: new Date().toISOString() } }); } catch (e) {}
+    // Broadcast real-time updates to task or project scopes
+    if (attachment.TaskID) {
+      try { emitToTask(attachment.TaskID, 'task.attachment.removed', { event: 'task.attachment.removed', version: 1, data: { taskId: attachment.TaskID, attachmentId }, meta: { emittedAt: new Date().toISOString() } }); } catch (e) {}
+    }
+    if (!attachment.TaskID && attachment.ProjectID) {
+      try { emitToProject(attachment.ProjectID, 'project.attachment.removed', { event: 'project.attachment.removed', version: 1, data: { projectId: attachment.ProjectID, attachmentId }, meta: { emittedAt: new Date().toISOString() } }); } catch (e) {}
+    }
     
     res.json({ 
       success: true,
@@ -210,15 +245,15 @@ router.delete('/bulk-delete', async (req, res) => {
     // Find attachments to get file paths
     const attachments = await Attachment.find({ AttachmentID: { $in: attachmentIds } });
     
-    // Delete physical files
-    for (const attachment of attachments) {
-      if (attachment.FileURL) {
-        const filePath = path.join(__dirname, '../../client/public', attachment.FileURL);
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
+    // Ask client to remove physical files via its API (best-effort)
+    try {
+      const base = process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000';
+      for (const attachment of attachments) {
+        if (attachment.FileURL) {
+          fetch(`${base}/api/local-delete?path=${encodeURIComponent(attachment.FileURL)}`, { method: 'DELETE' }).catch(() => {});
         }
       }
-    }
+    } catch (_) {}
 
     // Delete from database
     const result = await Attachment.deleteMany({ AttachmentID: { $in: attachmentIds } });

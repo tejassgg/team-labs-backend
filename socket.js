@@ -62,6 +62,9 @@ function initSocket(server) {
     }
   });
 
+  // In-memory presence map: taskId -> Map(userId -> { name, action })
+  const taskPresence = new Map();
+
   io.on('connection', (socket) => {
     const u = socket.data.user;
     if (u?.organizationID) {
@@ -164,6 +167,127 @@ function initSocket(server) {
       } catch (error) {
         console.error('Subtask leave error:', error);
       }
+    });
+
+    // Handle task collaboration events
+    socket.on('task.collaboration.join', async (data) => {
+      try {
+        const { taskId, projectId } = data || {};
+        if (taskId) {
+          // Join the task room
+          socket.join(`task:${taskId}`);
+
+          // Track which tasks this socket has joined for cleanup
+          if (!socket.data.tasksJoined) socket.data.tasksJoined = new Set();
+          socket.data.tasksJoined.add(String(taskId));
+
+          // Update presence map
+          const userId = socket.data.user.id;
+          const userName = `${socket.data.user.firstName || ''} ${socket.data.user.lastName || ''}`.trim();
+          const usersMap = taskPresence.get(String(taskId)) || new Map();
+          usersMap.set(userId, { userId, name: userName, action: 'viewing' });
+          taskPresence.set(String(taskId), usersMap);
+
+          // Build full state array
+          const users = Array.from(usersMap.values());
+
+          // Send full state to the joining user
+          socket.emit('task.collaboration.state', {
+            event: 'task.collaboration.state',
+            version: 1,
+            data: { taskId, users },
+            meta: { emittedAt: new Date().toISOString() }
+          });
+
+          // Broadcast full state to everyone else in the room
+          socket.to(`task:${taskId}`).emit('task.collaboration.state', {
+            event: 'task.collaboration.state',
+            version: 1,
+            data: { taskId, users },
+            meta: { emittedAt: new Date().toISOString() }
+          });
+        }
+      } catch (error) {
+        console.error('Task collaboration join error:', error);
+      }
+    });
+
+    socket.on('task.collaboration.leave', async (data) => {
+      try {
+        const { taskId, projectId } = data || {};
+        if (taskId) {
+          // Update presence map
+          const usersMap = taskPresence.get(String(taskId));
+          if (usersMap) {
+            usersMap.delete(socket.data.user.id);
+            if (usersMap.size === 0) {
+              taskPresence.delete(String(taskId));
+            } else {
+              taskPresence.set(String(taskId), usersMap);
+            }
+          }
+
+          // Broadcast full state after leaving
+          const users = usersMap ? Array.from(usersMap.values()) : [];
+          io.to(`task:${taskId}`).emit('task.collaboration.state', {
+            event: 'task.collaboration.state',
+            version: 1,
+            data: { taskId, users },
+            meta: { emittedAt: new Date().toISOString() }
+          });
+
+          socket.leave(`task:${taskId}`);
+        }
+      } catch (error) {
+        console.error('Task collaboration leave error:', error);
+      }
+    });
+
+    socket.on('task.collaboration.action', async (data) => {
+      try {
+        const { taskId, projectId, action } = data || {};
+        if (taskId && action) {
+          // Update presence map and broadcast full state
+          const usersMap = taskPresence.get(String(taskId)) || new Map();
+          const userId = socket.data.user.id;
+          const userName = `${socket.data.user.firstName || ''} ${socket.data.user.lastName || ''}`.trim();
+          usersMap.set(userId, { userId, name: userName, action });
+          taskPresence.set(String(taskId), usersMap);
+
+          const users = Array.from(usersMap.values());
+          io.to(`task:${taskId}`).emit('task.collaboration.state', {
+            event: 'task.collaboration.state',
+            version: 1,
+            data: { taskId, users },
+            meta: { emittedAt: new Date().toISOString() }
+          });
+        }
+      } catch (error) {
+        console.error('Task collaboration action error:', error);
+      }
+    });
+
+    // Cleanup presence on disconnect
+    socket.on('disconnect', () => {
+      const joined = socket.data.tasksJoined || new Set();
+      joined.forEach((taskId) => {
+        const usersMap = taskPresence.get(String(taskId));
+        if (usersMap) {
+          usersMap.delete(socket.data.user.id);
+          const users = Array.from(usersMap.values());
+          if (usersMap.size === 0) {
+            taskPresence.delete(String(taskId));
+          } else {
+            taskPresence.set(String(taskId), usersMap);
+          }
+          io.to(`task:${taskId}`).emit('task.collaboration.state', {
+            event: 'task.collaboration.state',
+            version: 1,
+            data: { taskId, users },
+            meta: { emittedAt: new Date().toISOString() }
+          });
+        }
+      });
     });
 
     // Join/leave conversation rooms (must be a participant)
@@ -552,6 +676,61 @@ function initSocket(server) {
         });
       } catch (error) {
         console.error('ICE candidate error:', error);
+      }
+    });
+
+    // Handle screen sharing events
+    socket.on('call.screen-share.started', async (payload) => {
+      try {
+        const { to, conversationId } = payload || {};
+        if (!to || !conversationId) return;
+        
+        // Verify the user is a participant in the conversation
+        const convo = await Conversation.findById(conversationId).select('participants');
+        if (!convo) return;
+        const isParticipant = convo.participants.map(String).includes(String(socket.data.user.id));
+        if (!isParticipant) return;
+        
+        // Forward screen share started event to the target user
+        emitToUser(to, 'call.screen-share.started', {
+          event: 'call.screen-share.started',
+          version: 1,
+          data: {
+            from: socket.data.user.id,
+            conversationId,
+            startedBy: `${socket.data.user.firstName || ''} ${socket.data.user.lastName || ''}`.trim()
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+      } catch (error) {
+        console.error('Screen share started error:', error);
+      }
+    });
+
+    socket.on('call.screen-share.stopped', async (payload) => {
+      try {
+        const { to, conversationId } = payload || {};
+        if (!to || !conversationId) return;
+        
+        // Verify the user is a participant in the conversation
+        const convo = await Conversation.findById(conversationId).select('participants');
+        if (!convo) return;
+        const isParticipant = convo.participants.map(String).includes(String(socket.data.user.id));
+        if (!isParticipant) return;
+        
+        // Forward screen share stopped event to the target user
+        emitToUser(to, 'call.screen-share.stopped', {
+          event: 'call.screen-share.stopped',
+          version: 1,
+          data: {
+            from: socket.data.user.id,
+            conversationId,
+            stoppedBy: `${socket.data.user.firstName || ''} ${socket.data.user.lastName || ''}`.trim()
+          },
+          meta: { emittedAt: new Date().toISOString() }
+        });
+      } catch (error) {
+        console.error('Screen share stopped error:', error);
       }
     });
   });

@@ -50,7 +50,7 @@ app.use(cors({
 app.use(express.urlencoded({ extended: false }));
 
 // Serve static files from uploads directory
-app.use('/uploads', express.static(path.join(__dirname, '../public/uploads')));
+// app.use('/uploads', express.static(path.join(__dirname, '../public/uploads')));
 
 // Swagger UI
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpecs, {
